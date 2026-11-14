@@ -397,6 +397,16 @@ static void cxl_fmws_direct_passthrough_remove(CXLType3Dev *ct3d,
     ct3d->direct_mr_fw[idx] = NULL;
 }
 
+/* Remove every direct alias of @ct3d, committed decoder or not */
+void cxl_fmws_direct_passthrough_drop(CXLType3Dev *ct3d)
+{
+    unsigned int i;
+
+    for (i = 0; i < CXL_HDM_DECODER_COUNT; i++) {
+        cxl_fmws_direct_passthrough_remove(ct3d, 0, i, false);
+    }
+}
+
 static int cxl_fmws_direct_passthrough(Object *obj, void *opaque)
 {
     CXLDirectPTState *state = opaque;

@@ -513,6 +513,65 @@ static void cxl_t3d_direct_alias_uncommit(void)
     g_assert_false(has_direct_alias(qts));
     qtest_quit(qts);
 }
+
+static void cfg_writew(QTestState *qts, unsigned bus, unsigned off,
+                       uint16_t val)
+{
+    qtest_outl(qts, 0xcf8, cfg_addr(bus, 0, 0, off));
+    qtest_outw(qts, 0xcfc + (off & 2), val);
+}
+
+/* Offset of the PCI Express capability of device 0 on @bus */
+static unsigned find_pcie_cap(QTestState *qts, unsigned bus)
+{
+    unsigned pos = cfg_readw(qts, bus, 0x34) & 0xff;
+
+    while (pos) {
+        uint16_t hdr = cfg_readw(qts, bus, pos);
+
+        if ((hdr & 0xff) == 0x10) {
+            return pos;
+        }
+        pos = hdr >> 8;
+    }
+    g_assert_not_reached();
+}
+
+static void cxl_t3d_direct_alias_reset(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_VMEM);
+    g_autofree char *map = qtest_hmp(qts, "info mtree");
+    uint64_t base = g_ascii_strtoull(mtree_window_line(map, 0), NULL, 16);
+
+    t3_map_registers(qts);
+    t3_commit_decoder(qts, base, 256 * MiB);
+    g_assert_true(has_direct_alias(qts));
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_false(has_direct_alias(qts));
+    qtest_quit(qts);
+}
+
+static void cxl_t3d_direct_alias_unplug(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_VMEM);
+    g_autofree char *map = qtest_hmp(qts, "info mtree");
+    uint64_t base = g_ascii_strtoull(mtree_window_line(map, 0), NULL, 16);
+    unsigned cap = find_pcie_cap(qts, 52);
+
+    t3_map_registers(qts);
+    t3_commit_decoder(qts, base, 256 * MiB);
+    g_assert_true(has_direct_alias(qts));
+
+    /* Without the guest uncommitting the decoder first */
+    qtest_qmp_assert_success(qts, "{ 'execute': 'device_del', "
+                             "'arguments': { 'id': 'mem0' } }");
+    cfg_writew(qts, 52, cap + 0x18, 0x0700);
+    qtest_qmp_eventwait(qts, "DEVICE_DELETED");
+    g_assert_false(has_direct_alias(qts));
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -554,6 +613,10 @@ int main(int argc, char **argv)
                        cxl_t3d_direct_alias_window);
         qtest_add_func("/pci/cxl/type3_device_direct_alias_uncommit",
                        cxl_t3d_direct_alias_uncommit);
+        qtest_add_func("/pci/cxl/type3_device_direct_alias_reset",
+                       cxl_t3d_direct_alias_reset);
+        qtest_add_func("/pci/cxl/type3_device_direct_alias_unplug",
+                       cxl_t3d_direct_alias_unplug);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX
