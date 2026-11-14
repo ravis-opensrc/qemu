@@ -372,7 +372,8 @@ static void cxl_fmws_direct_passthrough_setup(CXLDirectPTState *state,
 
 static void cxl_fmws_direct_passthrough_remove(CXLType3Dev *ct3d,
                                                uint64_t decoder_base,
-                                               unsigned int idx)
+                                               unsigned int idx,
+                                               bool committed)
 {
     CXLFixedWindow *owner_fw = ct3d->direct_mr_fw[idx];
     MemoryRegion *direct_mr = &ct3d->direct_mr[idx];
@@ -385,7 +386,7 @@ static void cxl_fmws_direct_passthrough_remove(CXLType3Dev *ct3d,
         return;
     }
 
-    if (cxl_cfmws_find_device(owner_fw, decoder_base, false)) {
+    if (committed && cxl_cfmws_find_device(owner_fw, decoder_base, false)) {
         return;
     }
 
@@ -479,22 +480,24 @@ static int update_non_interleaved(Object *obj, void *opaque)
 
         iw = FIELD_EX32(hdm_ctrl, CXL_HDM_DECODER0_CTRL, IW);
 
-        if (iw == 0) {
-            if (!commit) {
-                cxl_fmws_direct_passthrough_remove(ct3d, decoder_base, i);
-            } else {
-                CXLDirectPTState state = {
-                    .ct3d = ct3d,
-                    .decoder_base = decoder_base,
-                    .decoder_size = decoder_size,
-                    .dpa_base = dpa_base,
-                    .hdm_decoder_idx = i,
-                };
+        if (!commit) {
+            /* Whatever its interleave now, drop an alias that is stale */
+            cxl_fmws_direct_passthrough_remove(ct3d, decoder_base, i,
+                                               committed);
+        }
 
-                object_child_foreach_recursive(object_get_root(),
-                                               cxl_fmws_direct_passthrough,
-                                               &state);
-            }
+        if (commit && iw == 0) {
+            CXLDirectPTState state = {
+                .ct3d = ct3d,
+                .decoder_base = decoder_base,
+                .decoder_size = decoder_size,
+                .dpa_base = dpa_base,
+                .hdm_decoder_idx = i,
+            };
+
+            object_child_foreach_recursive(object_get_root(),
+                                           cxl_fmws_direct_passthrough,
+                                           &state);
         }
 
         interleave_ways_dec = cxl_interleave_ways_dec(iw, NULL);

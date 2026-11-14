@@ -488,6 +488,31 @@ static void cxl_t3d_direct_alias_window(void)
     g_assert_true(alias < mtree_window_line(after, 1));
     qtest_quit(qts);
 }
+
+/* Whether the memory map has the direct mapping alias of decoder 0 */
+static bool has_direct_alias(QTestState *qts)
+{
+    g_autofree char *map = qtest_hmp(qts, "info mtree");
+
+    return strstr(map, "cxl-direct-mapping-alias-0") != NULL;
+}
+
+/* A decoder that is uncommitted no longer maps its memory into the window */
+static void cxl_t3d_direct_alias_uncommit(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_VMEM);
+    g_autofree char *map = qtest_hmp(qts, "info mtree");
+    uint64_t base = g_ascii_strtoull(mtree_window_line(map, 0), NULL, 16);
+
+    t3_map_registers(qts);
+    g_assert_false(has_direct_alias(qts));
+    t3_commit_decoder(qts, base, 256 * MiB);
+    g_assert_true(has_direct_alias(qts));
+
+    qtest_writel(qts, HDM_DEC0_CTRL, 0);
+    g_assert_false(has_direct_alias(qts));
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -527,6 +552,8 @@ int main(int argc, char **argv)
                        cxl_t3d_dc_no_offer);
         qtest_add_func("/pci/cxl/type3_device_direct_alias_window",
                        cxl_t3d_direct_alias_window);
+        qtest_add_func("/pci/cxl/type3_device_direct_alias_uncommit",
+                       cxl_t3d_direct_alias_uncommit);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX
