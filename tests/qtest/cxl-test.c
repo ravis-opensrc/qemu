@@ -422,6 +422,72 @@ static void cxl_t3d_dc_no_offer(void)
                      RC_INVALID_INPUT);
     qtest_quit(qts);
 }
+
+/* Two fixed windows on the one host bridge */
+#define QEMU_PXB_2FMW \
+    "-machine q35,cxl=on " \
+    "-device pxb-cxl,id=cxl.0,bus=pcie.0,bus_nr=52 " \
+    "-M cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=1G," \
+    "cxl-fmw.1.targets.0=cxl.0,cxl-fmw.1.size=1G "
+
+/* The component registers of the Type 3 device: HDM decoder 0 */
+#define COMP_BAR        (MBOX_BAR + 0x10000)
+#define HDM_DEC0        (COMP_BAR + 0x1000 + 0x128 + 0x10)
+#define HDM_DEC0_BASE   (HDM_DEC0 + 0x00)
+#define HDM_DEC0_SIZE   (HDM_DEC0 + 0x08)
+#define HDM_DEC0_CTRL   (HDM_DEC0 + 0x10)
+
+/* Commit endpoint HDM decoder 0 for [base, base + size) */
+static void t3_commit_decoder(QTestState *qts, uint64_t base, uint64_t size)
+{
+    cfg_writel(qts, 53, 0x10, COMP_BAR);
+    cfg_writel(qts, 53, 0x14, 0);
+    /* The component registers take 32 bit accesses only */
+    qtest_writel(qts, HDM_DEC0_BASE, base);
+    qtest_writel(qts, HDM_DEC0_BASE + 4, base >> 32);
+    qtest_writel(qts, HDM_DEC0_SIZE, size);
+    qtest_writel(qts, HDM_DEC0_SIZE + 4, size >> 32);
+    qtest_writel(qts, HDM_DEC0_CTRL, 1 << 9);
+    g_assert_cmphex(qtest_readl(qts, HDM_DEC0_CTRL) & (1 << 10), !=, 0);
+}
+
+/* The line of "info mtree" of the @n th (from 0) fixed memory window */
+static const char *mtree_window_line(const char *mtree, unsigned n)
+{
+    const char *p = mtree;
+
+    while ((p = strstr(p, "cxl-fixed-memory-region")) != NULL) {
+        while (p > mtree && p[-1] != '\n') {
+            p--;
+        }
+        if (n-- == 0) {
+            return p;
+        }
+        p = strchr(p, '\n');
+    }
+    g_assert_not_reached();
+}
+
+static void cxl_t3d_direct_alias_window(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_2FMW QEMU_RP QEMU_T3D_VMEM);
+    g_autofree char *map = qtest_hmp(qts, "info mtree");
+    const char *line = mtree_window_line(map, 0);
+    uint64_t base = g_ascii_strtoull(line, NULL, 16);
+    g_autofree char *after = NULL;
+    const char *alias;
+
+    t3_map_registers(qts);
+    t3_commit_decoder(qts, base + 256 * MiB, 256 * MiB);
+
+    after = qtest_hmp(qts, "info mtree");
+    g_assert_null(strstr(after, "DETECTED OVERFLOW"));
+    /* The alias is listed under the first window, before the second */
+    alias = strstr(mtree_window_line(after, 0), "cxl-direct-mapping-alias-0");
+    g_assert_nonnull(alias);
+    g_assert_true(alias < mtree_window_line(after, 1));
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -459,6 +525,8 @@ int main(int argc, char **argv)
                        cxl_2pxb_4rp_4t3d);
         qtest_add_func("/pci/cxl/type3_device_dc_no_offer",
                        cxl_t3d_dc_no_offer);
+        qtest_add_func("/pci/cxl/type3_device_direct_alias_window",
+                       cxl_t3d_direct_alias_window);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX

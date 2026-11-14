@@ -407,6 +407,14 @@ static int cxl_fmws_direct_passthrough(Object *obj, void *opaque)
 
     fw = CXL_FMW(obj);
 
+    /* The decoder must lie entirely inside this window */
+    if (!state->decoder_size || state->decoder_base < fw->base ||
+        state->decoder_base - fw->base >= memory_region_size(&fw->mr) ||
+        state->decoder_size > memory_region_size(&fw->mr) -
+                              (state->decoder_base - fw->base)) {
+        return 0;
+    }
+
     /* Verify not interleaved */
     if (!cxl_cfmws_find_device(fw, state->decoder_base, false)) {
         return 0;
