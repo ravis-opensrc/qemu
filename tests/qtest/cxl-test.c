@@ -8,6 +8,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/bswap.h"
+#include "qobject/qjson.h"
 #include "libqtest-single.h"
 
 #define QEMU_PXB_CMD \
@@ -339,6 +340,7 @@ static void cfg_writel(QTestState *qts, unsigned bus, unsigned off,
 #define RC_SUCCESS      0x0
 #define RC_INVALID_INPUT 0x2
 #define RC_INVALID_PA    0xf
+#define RC_RESOURCES_EXHAUSTED 0x1d
 
 /* Give the Type 3 device on bus 53, behind the root port, its register BAR */
 static void t3_map_registers(QTestState *qts)
@@ -422,6 +424,87 @@ static void cxl_t3d_dc_no_offer(void)
                      RC_INVALID_INPUT);
     qtest_quit(qts);
 }
+
+/* 1024 blocks of 2 MiB, twice what the device can track */
+#define QEMU_T3D_DC_2G \
+    "-object memory-backend-ram,id=cxl-dc0,size=2G " \
+    "-device cxl-type3,bus=rp0,volatile-dc-memdev=cxl-dc0,num-dc-regions=1," \
+    "id=dcd0 "
+
+/* Offer @n extents of one block each, from @offset into region 0 */
+static QDict *dc_offer_n_rsp(QTestState *qts, uint64_t offset, unsigned n)
+{
+    QList *ext = qlist_new();
+    unsigned i;
+
+    for (i = 0; i < n; i++) {
+        qlist_append(ext, qdict_from_jsonf_nofail("{ 'offset': %" PRIu64
+                                                  ", 'len': %" PRIu64 " }",
+                                                  offset + i * 2 * MiB,
+                                                  2 * MiB));
+    }
+    return qtest_qmp(qts, "{ 'execute': 'cxl-add-dynamic-capacity', "
+                     "'arguments': { 'path': '/machine/peripheral/dcd0', "
+                     "'host-id': 0, 'selection-policy': 'prescriptive', "
+                     "'region': 0, 'extents': %p } }", ext);
+}
+
+static void dc_offer_n(QTestState *qts, uint64_t offset, unsigned n)
+{
+    QDict *rsp = dc_offer_n_rsp(qts, offset, n);
+
+    g_assert_false(qdict_haskey(rsp, "error"));
+    qobject_unref(rsp);
+}
+
+/* Add Dynamic Capacity Response (4802h) accepting @n blocks from @dpa */
+static unsigned dc_response_n(QTestState *qts, uint64_t dpa, unsigned n)
+{
+    /* The payload holds 84 entries of 24 bytes after the 8 byte header */
+    uint8_t pl[8 + 84 * 24] = {};
+    unsigned i;
+
+    g_assert_cmpuint(n, <=, 84);
+    stl_le_p(pl, n);
+    for (i = 0; i < n; i++) {
+        stq_le_p(pl + 8 + i * 24, dpa + i * 2 * MiB);
+        stq_le_p(pl + 16 + i * 24, 2 * MiB);
+    }
+    return t3_mbox(qts, 0x48, 0x02, pl, 8 + n * 24);
+}
+
+/*
+ * The device tracks 512 extents. An offered extent was counted once when
+ * it was queued and again when the response was checked, so a response
+ * for the last offers was refused while the device tracked fewer than 512.
+ */
+static void cxl_t3d_dc_extent_limit(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_DC_2G);
+    uint64_t dpa = 0;
+    QDict *rsp;
+    unsigned i;
+
+    t3_map_registers(qts);
+
+    /* 480 extents in six batches of 80: nothing near the limit yet */
+    for (i = 0; i < 6; i++) {
+        dc_offer_n(qts, dpa, 80);
+        g_assert_cmpuint(dc_response_n(qts, dpa, 80), ==, RC_SUCCESS);
+        dpa += 80 * 2 * MiB;
+    }
+
+    /* 32 more fill the device up, and the response must be accepted */
+    dc_offer_n(qts, dpa, 32);
+    g_assert_cmpuint(dc_response_n(qts, dpa, 32), ==, RC_SUCCESS);
+    dpa += 32 * 2 * MiB;
+
+    /* The 513th is not offered: the device could not take it */
+    rsp = dc_offer_n_rsp(qts, dpa, 1);
+    g_assert_true(qdict_haskey(rsp, "error"));
+    qobject_unref(rsp);
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -459,6 +542,8 @@ int main(int argc, char **argv)
                        cxl_2pxb_4rp_4t3d);
         qtest_add_func("/pci/cxl/type3_device_dc_no_offer",
                        cxl_t3d_dc_no_offer);
+        qtest_add_func("/pci/cxl/type3_device_dc_extent_limit",
+                       cxl_t3d_dc_extent_limit);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX

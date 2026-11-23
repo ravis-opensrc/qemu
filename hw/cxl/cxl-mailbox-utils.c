@@ -3741,7 +3741,9 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
     CXLUpdateDCExtentListInPl *in = (void *)payload_in;
     CXLType3Dev *ct3d = CXL_TYPE3(cci->d);
     CXLDCExtentList *extent_list = &ct3d->dc.extents;
-    uint32_t i, num;
+    CXLDCExtentGroup *ext_group;
+    CXLDCExtent *ent;
+    uint32_t i, num, pending;
     uint64_t dpa, len;
     CXLRetCode ret;
 
@@ -3765,8 +3767,14 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
         return CXL_MBOX_SUCCESS;
     }
 
-    /* Adding extents causes exceeding device's extent tracking ability. */
-    if (in->num_entries_updated + ct3d->dc.total_extent_count >
+    ext_group = QTAILQ_FIRST(&ct3d->dc.extents_pending);
+    pending = 0;
+    if (ext_group) {
+        QTAILQ_FOREACH(ent, &ext_group->list, node) {
+            pending++;
+        }
+    }
+    if (in->num_entries_updated + ct3d->dc.total_extent_count - pending >
         CXL_NUM_EXTENTS_SUPPORTED) {
         return CXL_MBOX_RESOURCES_EXHAUSTED;
     }

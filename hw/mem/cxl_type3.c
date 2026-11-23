@@ -2417,6 +2417,13 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
         num_extents++;
     }
 
+    /* The device cannot track more extents than it reports */
+    if (type == DC_EVENT_ADD_CAPACITY &&
+        num_extents + dcd->dc.total_extent_count > CXL_NUM_EXTENTS_SUPPORTED) {
+        error_setg(errp, "too many extents for the device to track");
+        return;
+    }
+
     /* Create extent list for event being passed to host */
     i = 0;
     list = records;
