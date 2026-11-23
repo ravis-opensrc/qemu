@@ -172,7 +172,8 @@ CXLRetCode cxl_event_get_records(CXLDeviceState *cxlds, CXLGetEventPayload *pl,
         entry = cxl_event_get_next(entry);
     }
 
-    if (!cxl_event_empty(log)) {
+    /* A record that did not fit in the response is still in the log */
+    if (entry) {
         pl->flags |= CXL_GET_EVENT_FLAG_MORE_RECORDS;
     }
 

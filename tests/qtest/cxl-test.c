@@ -505,6 +505,35 @@ static void cxl_t3d_dc_extent_limit(void)
     qobject_unref(rsp);
     qtest_quit(qts);
 }
+
+/*
+ * Get Event Records told the host there were more records when the log was
+ * not empty, also when the response had all of them.
+ */
+static void cxl_t3d_event_more_records(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_VMEM);
+    uint8_t log = 0; /* Informational Event Log */
+    uint8_t out[32 + 15 * 0x80];
+    int i;
+
+    t3_map_registers(qts);
+
+    for (i = 0; i < 3; i++) {
+        qtest_qmp_assert_success(qts, "{ 'execute': 'cxl-inject-dram-event', "
+                                 "'arguments': { 'path': '/machine/"
+                                 "peripheral/mem0', 'log': 'informational', "
+                                 "'flags': 1, 'dpa': %d, 'descriptor': 1, "
+                                 "'type': 3, 'transaction-type': 192, "
+                                 "'sub-type': 0 } }", i * 64);
+    }
+
+    g_assert_cmpuint(t3_mbox(qts, 0x01, 0x00, &log, 1), ==, RC_SUCCESS);
+    qtest_memread(qts, MBOX_PAYLOAD, out, sizeof(out));
+    g_assert_cmpuint(out[0], ==, 0); /* no More Event Records, no overflow */
+    g_assert_cmpuint(out[20] | out[21] << 8, ==, 3);
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -544,6 +573,8 @@ int main(int argc, char **argv)
                        cxl_t3d_dc_no_offer);
         qtest_add_func("/pci/cxl/type3_device_dc_extent_limit",
                        cxl_t3d_dc_extent_limit);
+        qtest_add_func("/pci/cxl/type3_device_event_more_records",
+                       cxl_t3d_event_more_records);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX
