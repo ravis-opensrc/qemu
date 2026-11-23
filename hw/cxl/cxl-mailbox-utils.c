@@ -84,6 +84,7 @@ enum {
     LOGS        = 0x04,
         #define GET_SUPPORTED 0x0
         #define GET_LOG       0x1
+        #define GET_SUPPORTED_SUBLIST 0x5
     FEATURES    = 0x05,
         #define GET_SUPPORTED 0x0
         #define GET_FEATURE   0x1
@@ -1150,6 +1151,11 @@ static const QemuUUID cel_uuid = {
                  0x96, 0xb1, 0x62, 0x3b, 0x3f, 0x17)
 };
 
+typedef struct CXLSupportedLogEntry {
+    QemuUUID uuid;
+    uint32_t size;
+} QEMU_PACKED CXLSupportedLogEntry;
+
 /* CXL r3.1 Section 8.2.9.5.1: Get Supported Logs (Opcode 0400h) */
 static CXLRetCode cmd_logs_get_supported(const struct cxl_cmd *cmd,
                                          uint8_t *payload_in,
@@ -1161,10 +1167,7 @@ static CXLRetCode cmd_logs_get_supported(const struct cxl_cmd *cmd,
     struct {
         uint16_t entries;
         uint8_t rsvd[6];
-        struct {
-            QemuUUID uuid;
-            uint32_t size;
-        } log_entries[1];
+        CXLSupportedLogEntry log_entries[1];
     } QEMU_PACKED *supported_logs = (void *)payload_out;
     QEMU_BUILD_BUG_ON(sizeof(*supported_logs) != 0x1c);
 
@@ -1173,6 +1176,43 @@ static CXLRetCode cmd_logs_get_supported(const struct cxl_cmd *cmd,
     supported_logs->log_entries[0].size = 4 * cci->cel_size;
 
     *len_out = sizeof(*supported_logs);
+    return CXL_MBOX_SUCCESS;
+}
+
+/* CXL r3.2 Section 8.2.10.5.6: Get Supported Logs Sub-List (Opcode 0405h) */
+static CXLRetCode cmd_logs_get_supported_sublist(const struct cxl_cmd *cmd,
+                                                 uint8_t *payload_in,
+                                                 size_t len_in,
+                                                 uint8_t *payload_out,
+                                                 size_t *len_out,
+                                                 CXLCCI *cci)
+{
+    struct {
+        uint8_t max_entries;
+        uint8_t start;
+    } QEMU_PACKED *in = (void *)payload_in;
+    struct {
+        uint8_t entries;
+        uint8_t rsvd1;
+        uint16_t total;
+        uint8_t start;
+        uint8_t rsvd2[3];
+        CXLSupportedLogEntry log_entries[1];
+    } QEMU_PACKED *out = (void *)payload_out;
+    uint8_t n;
+
+    /* The only log is the CEL; a window with nothing in it is empty */
+    n = (in->start < 1 && in->max_entries) ? 1 : 0;
+
+    out->entries = n;
+    out->total = cpu_to_le16(1);
+    out->start = in->start;
+    if (n) {
+        out->log_entries[0].uuid = cel_uuid;
+        out->log_entries[0].size = cpu_to_le32(4 * cci->cel_size);
+    }
+
+    *len_out = 8 + n * sizeof(CXLSupportedLogEntry);
     return CXL_MBOX_SUCCESS;
 }
 
@@ -4888,6 +4928,8 @@ static const struct cxl_cmd cxl_cmd_set_t3_fm_owned_ld_mctp[256][256] = {
     [LOGS][GET_SUPPORTED] = { "LOGS_GET_SUPPORTED", cmd_logs_get_supported, 0,
                               0 },
     [LOGS][GET_LOG] = { "LOGS_GET_LOG", cmd_logs_get_log, 0x18, 0 },
+    [LOGS][GET_SUPPORTED_SUBLIST] = { "LOGS_GET_SUPPORTED_SUBLIST",
+                                      cmd_logs_get_supported_sublist, 2, 0 },
     [TIMESTAMP][GET] = { "TIMESTAMP_GET", cmd_timestamp_get, 0, 0 },
     [IDENTIFY][MEMORY_DEVICE] = { "IDENTIFY_MEMORY_DEVICE",
                                   cmd_identify_memory_device, 0, 0 },
