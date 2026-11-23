@@ -425,6 +425,53 @@ static void cxl_t3d_dc_no_offer(void)
     qtest_quit(qts);
 }
 
+/* Effect of command @opcode in the Command Effects Log, or -1 if absent */
+static int cel_effect(QTestState *qts, unsigned opcode)
+{
+    /* Get Supported Logs (0400h) says how long the CEL is */
+    uint8_t sup[8 + 24 * 8] = {};
+    uint8_t in[24] = {
+        0x0d, 0xa9, 0xc0, 0xb5, 0xbf, 0x41, 0x4b, 0x78,
+        0x8f, 0x79, 0x96, 0xb1, 0x62, 0x3b, 0x3f, 0x17,
+    };
+    uint8_t cel[1024];
+    unsigned size, i;
+
+    g_assert_cmpuint(t3_mbox(qts, 0x04, 0x00, NULL, 0), ==, RC_SUCCESS);
+    qtest_memread(qts, MBOX_PAYLOAD, sup, sizeof(sup));
+    g_assert_cmpuint(lduw_le_p(sup), >=, 1);
+    g_assert(!memcmp(sup + 8, in, 16));
+    size = ldl_le_p(sup + 8 + 16);
+    g_assert_cmpuint(size, <=, sizeof(cel));
+
+    /* Get Log (0401h): the CEL from offset 0 */
+    stl_le_p(in + 16, 0);
+    stl_le_p(in + 20, size);
+    g_assert_cmpuint(t3_mbox(qts, 0x04, 0x01, in, sizeof(in)), ==, RC_SUCCESS);
+    qtest_memread(qts, MBOX_PAYLOAD, cel, size);
+    for (i = 0; i < size; i += 4) {
+        if (lduw_le_p(cel + i) == opcode) {
+            return lduw_le_p(cel + i + 2);
+        }
+    }
+    return -1;
+}
+
+/*
+ * Add (4802h) and Release (4803h) Dynamic Capacity Response change the
+ * configuration, they do not touch the data: the log says
+ * Immediate Configuration Change (bit 1) only.
+ */
+static void cxl_t3d_dc_cel_effects(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_DC);
+
+    t3_map_registers(qts);
+    g_assert_cmpint(cel_effect(qts, 0x4802), ==, 1 << 1);
+    g_assert_cmpint(cel_effect(qts, 0x4803), ==, 1 << 1);
+    qtest_quit(qts);
+}
+
 /* 1024 blocks of 2 MiB, twice what the device can track */
 #define QEMU_T3D_DC_2G \
     "-object memory-backend-ram,id=cxl-dc0,size=2G " \
@@ -571,6 +618,8 @@ int main(int argc, char **argv)
                        cxl_2pxb_4rp_4t3d);
         qtest_add_func("/pci/cxl/type3_device_dc_no_offer",
                        cxl_t3d_dc_no_offer);
+        qtest_add_func("/pci/cxl/type3_device_dc_cel_effects",
+                       cxl_t3d_dc_cel_effects);
         qtest_add_func("/pci/cxl/type3_device_dc_extent_limit",
                        cxl_t3d_dc_extent_limit);
         qtest_add_func("/pci/cxl/type3_device_event_more_records",
