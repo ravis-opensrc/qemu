@@ -3708,6 +3708,9 @@ static CXLRetCode cxl_dcd_add_dyn_cap_rsp_dry_run(CXLType3Dev *ct3d,
          * group in the pending list
          */
         ext_group = QTAILQ_FIRST(&ct3d->dc.extents_pending);
+        if (!ext_group) {
+            return CXL_MBOX_INVALID_INPUT;
+        }
         if (!cxl_extents_contains_dpa_range(&ext_group->list, dpa, len)) {
             return CXL_MBOX_INVALID_PA;
         }
@@ -3746,15 +3749,20 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
         return CXL_MBOX_INVALID_PAYLOAD_LENGTH;
     }
 
+    if (len_in <
+        sizeof(*in) + sizeof(*in->updated_entries) * in->num_entries_updated) {
+        return CXL_MBOX_INVALID_PAYLOAD_LENGTH;
+    }
+
+    /* A response answers an offer, and there is none outstanding. */
+    if (QTAILQ_EMPTY(&ct3d->dc.extents_pending)) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+
     if (in->num_entries_updated == 0) {
         num = cxl_extent_group_list_delete_front(&ct3d->dc.extents_pending);
         ct3d->dc.total_extent_count -= num;
         return CXL_MBOX_SUCCESS;
-    }
-
-    if (len_in <
-        sizeof(*in) + sizeof(*in->updated_entries) * in->num_entries_updated) {
-        return CXL_MBOX_INVALID_PAYLOAD_LENGTH;
     }
 
     /* Adding extents causes exceeding device's extent tracking ability. */

@@ -6,6 +6,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
+#include "qemu/bswap.h"
 #include "libqtest-single.h"
 
 #define QEMU_PXB_CMD \
@@ -301,6 +303,125 @@ static void cxl_virt_2pxb_4rp_4t3d(void)
     qtest_end();
     rmdir(tmpfs);
 }
+
+#define QEMU_T3D_DC \
+    "-object memory-backend-ram,id=cxl-dc0,size=256M " \
+    "-device cxl-type3,bus=rp0,volatile-dc-memdev=cxl-dc0,num-dc-regions=1," \
+    "id=dcd0 "
+
+static uint32_t cfg_addr(unsigned bus, unsigned dev, unsigned fn,
+                         unsigned off)
+{
+    return 0x80000000 | bus << 16 | dev << 11 | fn << 8 | (off & 0xfc);
+}
+
+static uint16_t cfg_readw(QTestState *qts, unsigned bus, unsigned off)
+{
+    qtest_outl(qts, 0xcf8, cfg_addr(bus, 0, 0, off));
+    return qtest_inw(qts, 0xcfc + (off & 2));
+}
+
+static void cfg_writel(QTestState *qts, unsigned bus, unsigned off,
+                       uint32_t val)
+{
+    qtest_outl(qts, 0xcf8, cfg_addr(bus, 0, 0, off));
+    qtest_outl(qts, 0xcfc, val);
+}
+
+#define MBOX_BAR        0xc0000000ULL
+/* The device registers: the mailbox follows the capability array and status */
+#define MBOX_REGS       (MBOX_BAR + 0x88)
+#define MBOX_CTRL       (MBOX_REGS + 0x04)
+#define MBOX_CMD        (MBOX_REGS + 0x08)
+#define MBOX_STS        (MBOX_REGS + 0x10)
+#define MBOX_PAYLOAD    (MBOX_REGS + 0x20)
+
+#define RC_SUCCESS      0x0
+#define RC_INVALID_INPUT 0x2
+#define RC_INVALID_PA    0xf
+
+/* Give the Type 3 device on bus 53, behind the root port, its register BAR */
+static void t3_map_registers(QTestState *qts)
+{
+    /* Root port: bus numbers 52 -> 53, a memory window, memory enable */
+    cfg_writel(qts, 52, 0x18, 0x00353534);
+    cfg_writel(qts, 52, 0x20, 0xc000c000);
+    cfg_writel(qts, 52, 0x04, 0x0006);
+    g_assert_cmphex(cfg_readw(qts, 53, 0), !=, 0xffff);
+    /* The device registers are the 64 bit BAR 2 */
+    cfg_writel(qts, 53, 0x18, MBOX_BAR);
+    cfg_writel(qts, 53, 0x1c, 0);
+    cfg_writel(qts, 53, 0x04, 0x0006);
+}
+
+/* Run a mailbox command and return its return code */
+static unsigned t3_mbox(QTestState *qts, unsigned set, unsigned cmd,
+                        const void *pl, size_t len)
+{
+    gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+
+    if (len) {
+        qtest_memwrite(qts, MBOX_PAYLOAD, pl, len);
+    }
+    qtest_writeq(qts, MBOX_CMD, (uint64_t)len << 16 | set << 8 | cmd);
+    qtest_writel(qts, MBOX_CTRL, 1);
+    while (qtest_readl(qts, MBOX_CTRL) & 1) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    return (qtest_readq(qts, MBOX_STS) >> 32) & 0xffff;
+}
+
+/* Add (4802h) or Release (4803h) Dynamic Capacity with one extent */
+static unsigned dc_response(QTestState *qts, unsigned cmd, uint64_t dpa,
+                            uint64_t len)
+{
+    uint8_t pl[8 + 24] = {};
+
+    stl_le_p(pl, 1);
+    stq_le_p(pl + 8, dpa);
+    stq_le_p(pl + 16, len);
+    return t3_mbox(qts, 0x48, cmd, pl, sizeof(pl));
+}
+
+static void dc_offer(QTestState *qts, uint64_t offset, uint64_t len)
+{
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cxl-add-dynamic-capacity', "
+                             "'arguments': { 'path': '/machine/peripheral/"
+                             "dcd0', 'host-id': 0, "
+                             "'selection-policy': 'prescriptive', "
+                             "'region': 0, "
+                             "'extents': [ { 'offset': %" PRIu64
+                             ", 'len': %" PRIu64 " } ] } }", offset, len);
+}
+
+/* A response answers an offer: with none outstanding it is refused */
+static void cxl_t3d_dc_no_offer(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_T3D_DC);
+    uint8_t none[8] = {};
+
+    t3_map_registers(qts);
+
+    /* With or without entries: this used to abort QEMU */
+    g_assert_cmpuint(t3_mbox(qts, 0x48, 0x02, none, sizeof(none)), ==,
+                     RC_INVALID_INPUT);
+    g_assert_cmpuint(dc_response(qts, 0x02, 0, 128 * MiB), ==,
+                     RC_INVALID_INPUT);
+
+    dc_offer(qts, 0, 128 * MiB);
+    g_assert_cmpuint(dc_response(qts, 0x02, 0, 128 * MiB), ==, RC_SUCCESS);
+
+    /* CXL r3.2 section 8.2.10.9.9.3 rejects an already accepted range. */
+    dc_offer(qts, 128 * MiB, 128 * MiB);
+    g_assert_cmpuint(dc_response(qts, 0x02, 0, 128 * MiB), ==,
+                     RC_INVALID_PA);
+    g_assert_cmpuint(dc_response(qts, 0x02, 128 * MiB, 128 * MiB), ==,
+                     RC_SUCCESS);
+    g_assert_cmpuint(t3_mbox(qts, 0x48, 0x02, none, sizeof(none)), ==,
+                     RC_INVALID_INPUT);
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -336,6 +457,8 @@ int main(int argc, char **argv)
         qtest_add_func("/pci/cxl/rp_x2_type3_x2", cxl_1pxb_2rp_2t3d);
         qtest_add_func("/pci/cxl/pxb_x2_root_port_x4_type3_x4",
                        cxl_2pxb_4rp_4t3d);
+        qtest_add_func("/pci/cxl/type3_device_dc_no_offer",
+                       cxl_t3d_dc_no_offer);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX
