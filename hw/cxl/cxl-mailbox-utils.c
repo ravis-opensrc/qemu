@@ -640,9 +640,9 @@ static CXLRetCode cmd_get_physical_port_state(const struct cxl_cmd *cmd,
                                   port_dev->exp.exp_cap + PCI_EXP_LNKSTA2,
                                   sizeof(lnksta2));
 
-                    /* Assume MLD for now */
+                    /* QEMU has no MLD Type 3 device, so it is an SLD */
                     port->connected_device_type =
-                        CXL_PORT_CONNECTED_DEV_TYPE_3_MLD;
+                        CXL_PORT_CONNECTED_DEV_TYPE_3_SLD;
                     if (lnksta2 & PCI_EXP_LNKSTA2_FLIT) {
                         port->connected_device_mode =
                             CXL_PORT_CONNECTED_DEV_MODE_256B;

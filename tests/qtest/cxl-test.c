@@ -354,22 +354,29 @@ static void t3_map_registers(QTestState *qts)
     cfg_writel(qts, 53, 0x04, 0x0006);
 }
 
-/* Run a mailbox command and return its return code */
-static unsigned t3_mbox(QTestState *qts, unsigned set, unsigned cmd,
-                        const void *pl, size_t len)
+/* Run a mailbox command of the device whose mailbox is at @regs */
+static unsigned cci_mbox(QTestState *qts, uint64_t regs, unsigned set,
+                         unsigned cmd, const void *pl, size_t len)
 {
     gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
 
     if (len) {
-        qtest_memwrite(qts, MBOX_PAYLOAD, pl, len);
+        qtest_memwrite(qts, regs + 0x20, pl, len);
     }
-    qtest_writeq(qts, MBOX_CMD, (uint64_t)len << 16 | set << 8 | cmd);
-    qtest_writel(qts, MBOX_CTRL, 1);
-    while (qtest_readl(qts, MBOX_CTRL) & 1) {
+    qtest_writeq(qts, regs + 0x08, (uint64_t)len << 16 | set << 8 | cmd);
+    qtest_writel(qts, regs + 0x04, 1);
+    while (qtest_readl(qts, regs + 0x04) & 1) {
         g_assert_cmpint(g_get_monotonic_time(), <, deadline);
         g_usleep(1000);
     }
-    return (qtest_readq(qts, MBOX_STS) >> 32) & 0xffff;
+    return (qtest_readq(qts, regs + 0x10) >> 32) & 0xffff;
+}
+
+/* The same on the Type 3 device, and return its return code */
+static unsigned t3_mbox(QTestState *qts, unsigned set, unsigned cmd,
+                        const void *pl, size_t len)
+{
+    return cci_mbox(qts, MBOX_REGS, set, cmd, pl, len);
 }
 
 /* Add (4802h) or Release (4803h) Dynamic Capacity with one extent */
@@ -422,6 +429,54 @@ static void cxl_t3d_dc_no_offer(void)
                      RC_INVALID_INPUT);
     qtest_quit(qts);
 }
+
+#define QEMU_SWITCH_T3D \
+    "-device cxl-upstream,bus=rp0,id=us0 " \
+    "-device cxl-downstream,port=0,bus=us0,id=swport0,chassis=0,slot=4 " \
+    "-object memory-backend-ram,id=cxl-mem0,size=256M " \
+    "-device cxl-type3,bus=swport0,volatile-memdev=cxl-mem0,id=mem0 " \
+    "-device cxl-switch-mailbox-cci,bus=pcie.0,addr=0x5,target=us0 "
+
+#define SWCCI_BAR       0xc1000000ULL
+#define SWCCI_REGS      (SWCCI_BAR + 0x88)
+#define SWCCI_PAYLOAD   (SWCCI_REGS + 0x20)
+
+static void swcci_map_registers(QTestState *qts)
+{
+    /* Device 5 on the root bus: the registers are the 64 bit BAR 0 */
+    qtest_outl(qts, 0xcf8, cfg_addr(0, 5, 0, 0x10));
+    qtest_outl(qts, 0xcfc, SWCCI_BAR);
+    qtest_outl(qts, 0xcf8, cfg_addr(0, 5, 0, 0x14));
+    qtest_outl(qts, 0xcfc, 0);
+    qtest_outl(qts, 0xcf8, cfg_addr(0, 5, 0, 0x04));
+    qtest_outl(qts, 0xcfc, 0x0006);
+}
+
+/* Get Physical Port State (5101h) for port 0 */
+static unsigned swcci_port0_state(QTestState *qts, uint8_t *info)
+{
+    uint8_t req[2] = { 1, 0 };
+    unsigned rc = cci_mbox(qts, SWCCI_REGS, 0x51, 0x01, req, sizeof(req));
+
+    /* Four bytes, then a block of 16 for the port */
+    qtest_memread(qts, SWCCI_PAYLOAD, info, 4 + 16);
+    return rc;
+}
+
+#define PORT_CONNECTED_TYPE     (4 + 4)
+#define PORT_TYPE_3_SLD         0x04
+
+static void cxl_switch_port_state_sld(void)
+{
+    QTestState *qts = qtest_init(QEMU_PXB_CMD QEMU_RP QEMU_SWITCH_T3D);
+    uint8_t info[4 + 16];
+
+    swcci_map_registers(qts);
+    g_assert_cmpuint(swcci_port0_state(qts, info), ==, RC_SUCCESS);
+    g_assert_cmpuint(info[0], ==, 1);
+    g_assert_cmpuint(info[PORT_CONNECTED_TYPE], ==, PORT_TYPE_3_SLD);
+    qtest_quit(qts);
+}
 #endif /* CONFIG_POSIX */
 
 int main(int argc, char **argv)
@@ -459,6 +514,8 @@ int main(int argc, char **argv)
                        cxl_2pxb_4rp_4t3d);
         qtest_add_func("/pci/cxl/type3_device_dc_no_offer",
                        cxl_t3d_dc_no_offer);
+        qtest_add_func("/pci/cxl/switch_port_state_sld",
+                       cxl_switch_port_state_sld);
 #endif
     } else if (strcmp(arch, "aarch64") == 0) {
 #ifdef CONFIG_POSIX
