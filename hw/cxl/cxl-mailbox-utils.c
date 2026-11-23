@@ -866,7 +866,8 @@ static CXLRetCode cmd_infostat_bg_op_abort(const struct cxl_cmd *cmd,
     int bg_cmd = cci->bg.opcode & 0xff;
     const struct cxl_cmd *bg_c = &cci->cxl_cmd_set[bg_set][bg_cmd];
 
-    if (!(bg_c->effect & CXL_MBOX_BACKGROUND_OPERATION_ABORT)) {
+    if (!(bg_c->effect &
+          CXL_MBOX_REQUEST_ABORT_BACKGROUND_OP_SUPPORTED)) {
         return CXL_MBOX_REQUEST_ABORT_NOTSUP;
     }
 
@@ -4498,10 +4499,12 @@ static const struct cxl_cmd cxl_cmd_set[256][256] = {
         cmd_firmware_update_get_info, 0, 0 },
     [FIRMWARE_UPDATE][TRANSFER] = { "FIRMWARE_UPDATE_TRANSFER",
         cmd_firmware_update_transfer, ~0,
-        CXL_MBOX_BACKGROUND_OPERATION | CXL_MBOX_BACKGROUND_OPERATION_ABORT },
+        CXL_MBOX_BACKGROUND_OPERATION |
+        CXL_MBOX_REQUEST_ABORT_BACKGROUND_OP_SUPPORTED },
     [FIRMWARE_UPDATE][ACTIVATE] = { "FIRMWARE_UPDATE_ACTIVATE",
         cmd_firmware_update_activate, 2,
-        CXL_MBOX_BACKGROUND_OPERATION | CXL_MBOX_BACKGROUND_OPERATION_ABORT },
+        CXL_MBOX_BACKGROUND_OPERATION |
+        CXL_MBOX_REQUEST_ABORT_BACKGROUND_OP_SUPPORTED },
     [TIMESTAMP][GET] = { "TIMESTAMP_GET", cmd_timestamp_get, 0, 0 },
     [TIMESTAMP][SET] = { "TIMESTAMP_SET", cmd_timestamp_set,
                          8, CXL_MBOX_IMMEDIATE_POLICY_CHANGE },
@@ -4543,7 +4546,7 @@ static const struct cxl_cmd cxl_cmd_set[256][256] = {
         (CXL_MBOX_IMMEDIATE_DATA_CHANGE |
          CXL_MBOX_SECURITY_STATE_CHANGE |
          CXL_MBOX_BACKGROUND_OPERATION |
-         CXL_MBOX_BACKGROUND_OPERATION_ABORT)},
+         CXL_MBOX_REQUEST_ABORT_BACKGROUND_OP_SUPPORTED)},
     [SANITIZE][MEDIA_OPERATIONS] = { "MEDIA_OPERATIONS", cmd_media_operations,
         ~0,
         (CXL_MBOX_IMMEDIATE_DATA_CHANGE |
@@ -4561,7 +4564,8 @@ static const struct cxl_cmd cxl_cmd_set[256][256] = {
         cmd_media_get_scan_media_capabilities, 16, 0 },
     [MEDIA_AND_POISON][SCAN_MEDIA] = { "MEDIA_AND_POISON_SCAN_MEDIA",
         cmd_media_scan_media, 17,
-        (CXL_MBOX_BACKGROUND_OPERATION | CXL_MBOX_BACKGROUND_OPERATION_ABORT)},
+        (CXL_MBOX_BACKGROUND_OPERATION |
+         CXL_MBOX_REQUEST_ABORT_BACKGROUND_OP_SUPPORTED)},
     [MEDIA_AND_POISON][GET_SCAN_MEDIA_RESULTS] = {
         "MEDIA_AND_POISON_GET_SCAN_MEDIA_RESULTS",
         cmd_media_get_scan_media_results, 0, 0 },
@@ -4611,6 +4615,7 @@ static const struct cxl_cmd cxl_cmd_set_fm_dcd[256][256] = {
     [FMAPI_DCD_MGMT][SET_DC_REGION_CONFIG] = { "SET_DC_REGION_CONFIG",
         cmd_fm_set_dc_region_config, 16,
         (CXL_MBOX_CONFIG_CHANGE_COLD_RESET |
+         CXL_MBOX_CEL_10_TO_11_VALID |
          CXL_MBOX_CONFIG_CHANGE_CONV_RESET |
          CXL_MBOX_CONFIG_CHANGE_CXL_RESET |
          CXL_MBOX_IMMEDIATE_CONFIG_CHANGE |
@@ -4620,6 +4625,7 @@ static const struct cxl_cmd cxl_cmd_set_fm_dcd[256][256] = {
     [FMAPI_DCD_MGMT][INITIATE_DC_ADD] = { "INIT_DC_ADD",
         cmd_fm_initiate_dc_add, ~0,
         (CXL_MBOX_CONFIG_CHANGE_COLD_RESET |
+        CXL_MBOX_CEL_10_TO_11_VALID |
         CXL_MBOX_CONFIG_CHANGE_CONV_RESET |
         CXL_MBOX_CONFIG_CHANGE_CXL_RESET |
         CXL_MBOX_IMMEDIATE_CONFIG_CHANGE |
@@ -4627,6 +4633,7 @@ static const struct cxl_cmd cxl_cmd_set_fm_dcd[256][256] = {
     [FMAPI_DCD_MGMT][INITIATE_DC_RELEASE] = { "INIT_DC_RELEASE",
         cmd_fm_initiate_dc_release, ~0,
         (CXL_MBOX_CONFIG_CHANGE_COLD_RESET |
+         CXL_MBOX_CEL_10_TO_11_VALID |
          CXL_MBOX_CONFIG_CHANGE_CONV_RESET |
          CXL_MBOX_CONFIG_CHANGE_CXL_RESET |
          CXL_MBOX_IMMEDIATE_CONFIG_CHANGE |
